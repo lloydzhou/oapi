@@ -1,39 +1,18 @@
 #!/usr/bin/env python3
-"""Test HTTP server for oapi e2e: serves the spec file and API endpoints."""
+"""Test HTTP server for oapi e2e: serves the spec file and API endpoints.
+
+Run in the foreground; the caller backgrounds it and waits for $ROOT/ready.
+"""
 import json
 import os
 import sys
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ROOT = sys.argv[1]
+PORT = int(sys.argv[2])
 PIDFILE = os.path.join(ROOT, "test.pid")
-
-def daemonize():
-    pid = os.fork()
-    if pid > 0:
-        for _ in range(50):
-            if os.path.exists(PIDFILE):
-                break
-            time.sleep(0.05)
-        sys.exit(0)
-    os.setsid()
-    pid = os.fork()
-    if pid > 0:
-        sys.exit(0)
-    os.chdir("/")
-    os.umask(0)
-    for fd in range(0, 3):
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-    sys.stdin = open(os.devnull, "r")
-    sys.stdout = open(os.devnull, "w")
-    sys.stderr = open(os.devnull, "w")
-
-if len(sys.argv) > 3 and sys.argv[3] == "--daemon":
-    daemonize()
+READYFILE = os.path.join(ROOT, "ready")
+ERRFILE = os.path.join(ROOT, "error.log")
 
 class Handler(BaseHTTPRequestHandler):
     def _send(self, status, obj):
@@ -43,6 +22,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
 
     def do_GET(self):
         path = self.path.split("?")[0]
@@ -77,9 +59,16 @@ class Handler(BaseHTTPRequestHandler):
             data = {"_raw": raw.decode("utf-8", "replace")}
         self._send(200, {"created": True, "received": data})
 
+try:
+    server = HTTPServer(("127.0.0.1", PORT), Handler)
+except Exception as e:
+    with open(ERRFILE, "w") as f:
+        f.write(repr(e) + "\n")
+    sys.exit(1)
+
 with open(PIDFILE, "w") as f:
     f.write(str(os.getpid()))
+with open(READYFILE, "w") as f:
+    f.write("ok\n")
 
-port = int(sys.argv[2])
-server = HTTPServer(("127.0.0.1", port), Handler)
 server.serve_forever()

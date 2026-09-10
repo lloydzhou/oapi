@@ -39,14 +39,18 @@ assert_contains() {
     fi
 }
 
-# start test httpd
+# start test httpd (background, foreground script, ready-file handshake)
 mkdir -p "$ROOT"
-python3 tests/test_server.py "$ROOT" "$PORT" --daemon
-for _ in $(seq 1 50); do
-    [ -f "$ROOT/test.pid" ] && break
+nohup python3 tests/test_server.py "$ROOT" "$PORT" >/dev/null 2>&1 &
+for _ in $(seq 1 100); do
+    [ -f "$ROOT/ready" ] && break
     sleep 0.05
 done
-sleep 0.5
+if [ ! -f "$ROOT/ready" ]; then
+    echo "FAIL: test server did not start (port $PORT)"
+    cat "$ROOT/error.log" 2>/dev/null
+    exit 1
+fi
 BASE="http://127.0.0.1:$PORT"
 
 # usage without args exits 1
@@ -129,7 +133,10 @@ assert_eq "unknown-api" "$?" "1"
 
 # cleanup
 PID=$(cat "$ROOT/test.pid" 2>/dev/null)
-[ -n "$PID" ] && kill "$PID" 2>/dev/null
+if [ -n "$PID" ]; then
+    kill "$PID" 2>/dev/null
+    wait "$PID" 2>/dev/null
+fi
 rm -rf "$ROOT" tests/o.home
 
 if [ "$fail" -gt 0 ]; then
