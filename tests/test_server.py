@@ -3,9 +3,17 @@
 
 Run in the foreground; the caller backgrounds it and waits for $ROOT/ready.
 """
-import json
 import os
 import sys
+
+BOOTFILE = os.path.join(sys.argv[1], "boot")
+try:
+    with open(BOOTFILE, "w") as f:
+        f.write("boot\n")
+except OSError:
+    pass
+
+import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ROOT = sys.argv[1]
