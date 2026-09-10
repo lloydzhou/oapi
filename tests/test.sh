@@ -41,13 +41,20 @@ assert_contains() {
 
 # start test httpd (background, foreground script, ready-file handshake)
 mkdir -p "$ROOT"
-nohup python3 tests/test_server.py "$ROOT" "$PORT" >/dev/null 2>&1 &
+nohup python3 tests/test_server.py "$ROOT" "$PORT" >"$ROOT/server.out" 2>&1 &
+SRVPID=$!
 for _ in $(seq 1 200); do
     [ -f "$ROOT/ready" ] && break
     sleep 0.05
 done
 if [ ! -f "$ROOT/ready" ]; then
-    echo "FAIL: test server did not start (port $PORT)"
+    echo "FAIL: test server did not start (port $PORT, pid $SRVPID)"
+    kill -0 "$SRVPID" 2>/dev/null && echo "server process alive" || echo "server process dead"
+    echo "--- proxy env ---"
+    env | grep -i proxy || echo "(none)"
+    echo "--- server.out ---"
+    cat "$ROOT/server.out" 2>/dev/null
+    echo "--- error.log ---"
     cat "$ROOT/error.log" 2>/dev/null
     exit 1
 fi
