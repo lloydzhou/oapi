@@ -42,7 +42,7 @@ assert_contains() {
 # start test httpd (background, foreground script, ready-file handshake)
 mkdir -p "$ROOT"
 nohup python3 tests/test_server.py "$ROOT" "$PORT" >/dev/null 2>&1 &
-for _ in $(seq 1 100); do
+for _ in $(seq 1 200); do
     [ -f "$ROOT/ready" ] && break
     sleep 0.05
 done
