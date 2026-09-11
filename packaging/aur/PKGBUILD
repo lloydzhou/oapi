@@ -16,6 +16,8 @@ sha256sums=('959bcbc4cdc7a2ab2004d16ad4efdc94d0fdda758a47323300ec7c6cd73578f2')
 build() {
   cd "${srcdir}/${pkgname}-${pkgver}"
   export CARGO_TARGET_DIR=target
+  # ring 0.17 prebuilt asm objects fail to link with Arch's default lld; use GNU bfd
+  export RUSTFLAGS="${RUSTFLAGS} -C link-arg=-fuse-ld=bfd"
   cargo build --release --locked
 }
 
