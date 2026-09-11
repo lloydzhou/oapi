@@ -58,8 +58,14 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       - run: cp target/${{ matrix.target }}/release/oapi ${{ matrix.asset }}
+      - name: Build deb package
+        if: matrix.asset == 'oapi-linux-amd64' || matrix.asset == 'oapi-linux-arm64'
+        run: bash scripts/build-deb.sh "${{ github.ref_name }}" "${{ matrix.asset }}"
       - uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.asset }}
+          files: |
+            ${{ matrix.asset }}
+            oapi_*_amd64.deb
+            oapi_*_arm64.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
