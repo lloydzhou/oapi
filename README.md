@@ -15,9 +15,15 @@ cargo install --path .
 brew install lloydzhou/tap/oapi
 ```
 
+```bash
 # or via APT (Debian/Ubuntu; the repository is hosted alongside bash-agent)
 curl -fsSL https://lloydzhou.github.io/bash-agent/install.sh | sudo bash
 sudo apt-get install oapi
+```
+
+```bash
+# or via AUR (Arch Linux; oapi-bin for the prebuilt binary)
+yay -S oapi
 ```
 
 ## Usage

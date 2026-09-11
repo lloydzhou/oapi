@@ -1,0 +1,15 @@
+pkgbase = oapi
+	pkgdesc = OpenAPI command-line client written in Rust
+	pkgver = 0.1.1
+	pkgrel = 1
+	url = https://github.com/lloydzhou/oapi
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = cargo
+	depends = ca-certificates
+	conflicts = oapi-bin
+	source = oapi-0.1.1.tar.gz::https://github.com/lloydzhou/oapi/archive/refs/tags/v0.1.1.tar.gz
+	sha256sums = 959bcbc4cdc7a2ab2004d16ad4efdc94d0fdda758a47323300ec7c6cd73578f2
+
+pkgname = oapi
