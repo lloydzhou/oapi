@@ -32,10 +32,16 @@ pub fn request(method: &str, url: &str, headers: &[String], body: &str, timeout_
     let resp = match result {
         Ok(r) => r,
         Err(ureq::Error::Status(_code, r)) => r,
-        Err(_) => return None,
+        Err(e) => {
+            eprintln!("oapi: {} {} failed: {}", method, url, e);
+            return None;
+        }
     };
     let status = resp.status();
-    let mut body = String::new();
-    let _ = resp.into_reader().read_to_string(&mut body);
+    // Read raw bytes first: read_to_string fails outright on non-UTF-8
+    // bodies (its Err was previously discarded, silently truncating data).
+    let mut bytes = Vec::new();
+    let _ = resp.into_reader().read_to_end(&mut bytes);
+    let body = String::from_utf8_lossy(&bytes).into_owned();
     Some(Response { status, body })
 }
