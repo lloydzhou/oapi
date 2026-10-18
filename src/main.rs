@@ -86,7 +86,36 @@ fn add_header(headers: &mut Vec<String>, h: &str) {
     if !h.contains(':') || h.starts_with(':') {
         die(&format!("invalid header '{}'", h));
     }
-    headers.push(h.to_string());
+    headers.push(expand_env(h));
+}
+
+/// Expand `${VAR}` references in header values from the process environment,
+/// so credentials can travel via env vars instead of process arguments.
+/// Missing variables fail closed instead of sending the literal placeholder.
+fn expand_env(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        match after.find('}') {
+            Some(end) => {
+                let name = &after[..end];
+                match env::var(name) {
+                    Ok(v) => out.push_str(&v),
+                    Err(_) => die(&format!("environment variable '{}' is not set", name)),
+                }
+                rest = &after[end + 1..];
+            }
+            // Unterminated placeholder: keep the literal text.
+            None => {
+                out.push_str("${");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn parse_timeout(s: &str) -> bool {
@@ -483,7 +512,7 @@ fn cmd_call(r: &registry::Registry, opname: &str, args: &[String], opts: &Global
                 headers.push(format!(
                     "{}: {}",
                     pname,
-                    flag_vals[idx].as_deref().unwrap_or("")
+                    expand_env(flag_vals[idx].as_deref().unwrap_or(""))
                 ));
             } else {
                 if !query.is_empty() {

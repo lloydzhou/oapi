@@ -59,7 +59,22 @@ call options: --body X (inline / @file / -)   -F K=V (repeatable, auto-typed)
 
 stdout carries data only; diagnostics go to stderr and a non-2xx response
 exits 1. `--dry-run` prints the request (with credential headers masked)
-instead of sending it.
+
+## Authentication via environment variables
+
+`--header` values (and spec header parameters) expand `${VAR}` references from
+the process environment, so credentials never need to appear in process
+arguments (visible via `ps`):
+
+```bash
+export DEEPSEEK_API_KEY=...
+oapi deepseek search --query 'rust async' \
+  --header 'Authorization: Bearer ${DEEPSEEK_API_KEY}'
+```
+
+A missing variable fails closed with an error instead of sending the literal
+placeholder. Expansion applies to header values only, never to `--body` or
+`-F` data.
 
 ## Registry
 

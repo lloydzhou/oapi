@@ -127,6 +127,15 @@ assert_contains "api-data" "$($OAPI api pet POST /pets --data '{"k":1}' 2>&1)" '
 # dry-run masks sensitive headers
 assert_contains "mask-header" "$($OAPI pet list-pets --header 'Authorization: Bearer secret123' --dry-run 2>&1)" 'Bearer ***'
 
+# ${VAR} in header values expands from the environment
+export OAPI_TEST_TOKEN='tok-secret-123'
+assert_contains "header-env" "$($OAPI api pet GET /headers --header 'Authorization: Bearer ${OAPI_TEST_TOKEN}' 2>&1)" '"authorization":"Bearer tok-secret-123"'
+unset OAPI_TEST_TOKEN
+
+# unset variables fail closed instead of sending the placeholder
+$OAPI api pet GET /headers --header 'Authorization: Bearer ${OAPI_UNSET_TEST_VAR}' >/dev/null 2>&1
+assert_eq "header-env-missing" "$?" "1"
+
 # sync re-fetches from the stored source
 assert_eq "sync" "$($OAPI sync pet 2>&1)" "connected pet: 3 operations (source $BASE/petstore.json)"
 

@@ -53,6 +53,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/pets/"):
             pid = path.rsplit("/", 1)[1]
             self._send(200, {"id": pid, "name": "pet-" + pid})
+        elif path == "/api/headers":
+            self._send(200, {"authorization": self.headers.get("Authorization", "")})
         elif path == "/api/fail":
             self._send(500, {"error": "boom"})
         else:
