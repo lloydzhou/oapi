@@ -2,6 +2,7 @@ mod bind;
 mod creds;
 mod http;
 mod jq;
+mod multipart;
 mod output;
 mod registry;
 mod spec;
@@ -152,12 +153,12 @@ fn stored_headers(api: &str) -> Vec<String> {
 
 fn fetch_spec(source: &str) -> Option<Value> {
     let text = if source.starts_with("http://") || source.starts_with("https://") {
-        let resp = http::request("GET", source, &["Accept: application/json".to_string()], "", DEFAULT_TIMEOUT_MS)?;
+        let resp = http::request("GET", source, &["Accept: application/json".to_string()], &[], DEFAULT_TIMEOUT_MS)?;
         if resp.status < 200 || resp.status >= 300 {
             err(&format!("fetch {}: HTTP {}", source, resp.status));
             return None;
         }
-        resp.body
+        String::from_utf8_lossy(&resp.body).into_owned()
     } else {
         util::read_file(source).ok()?
     };
@@ -404,8 +405,8 @@ fn cmd_api(r: &registry::Registry, method: &str, path: &str, args: &[String], op
         err(&format!("base url '{}' is not absolute", url));
         return 1;
     }
-    let body = data.as_deref().unwrap_or("");
-    let resp = match http::request(method, &url, &headers, body, opts.timeout_ms) {
+    let body = data.as_deref().unwrap_or("").as_bytes().to_vec();
+    let resp = match http::request(method, &url, &headers, &body, opts.timeout_ms) {
         Some(r) => r,
         None => {
             err("request failed (transport error)");
@@ -413,7 +414,8 @@ fn cmd_api(r: &registry::Registry, method: &str, path: &str, args: &[String], op
         }
     };
     if resp.status < 200 || resp.status >= 300 {
-        err(&format!("HTTP {}: {}", resp.status, &resp.body[..resp.body.len().min(512)]));
+        let preview = String::from_utf8_lossy(&resp.body[..resp.body.len().min(512)]);
+        err(&format!("HTTP {}: {}", resp.status, preview));
         return 1;
     }
     print_response_body(&resp.body, None, false);
@@ -435,6 +437,7 @@ fn cmd_call(r: &registry::Registry, opname: &str, args: &[String], opts: &Global
     let mut body_fields: Vec<(String, String)> = Vec::new();
     let mut jq_path: Option<String> = None;
     let mut text_out = false;
+    let mut out_file: Option<String> = None;
     let mut headers = merge_headers(&stored_headers(&r.name), &opts.headers);
 
     let mut i = 0;
@@ -499,11 +502,23 @@ fn cmd_call(r: &registry::Registry, opname: &str, args: &[String], opts: &Global
             }
             i += 1;
         } else if a == "-o" {
-            if i + 1 >= args.len() || args[i + 1] != "text" {
-                die("-o supports 'text' only");
+            if i + 1 >= args.len() {
+                die("missing value for -o");
             }
-            text_out = true;
+            let v = &args[i + 1];
+            if v == "text" {
+                text_out = true;
+            } else {
+                out_file = Some(v.clone());
+            }
             i += 2;
+        } else if let Some(v) = a.strip_prefix("-o=") {
+            if v == "text" {
+                text_out = true;
+            } else {
+                out_file = Some(v.to_string());
+            }
+            i += 1;
         } else if let Some(rest) = a.strip_prefix("--") {
             let (name, val) = if let Some(eq) = rest.find('=') {
                 (rest[..eq].to_string(), Some(rest[eq + 1..].to_string()))
@@ -623,29 +638,67 @@ fn cmd_call(r: &registry::Registry, opname: &str, args: &[String], opts: &Global
         url.push_str(&query);
     }
 
-    let mut body = String::new();
+    let mut body: Vec<u8> = Vec::new();
+    let mut is_multipart = false;
     if let Some(b) = &body_inline {
         if !body_fields.is_empty() {
             die("--body and -F are mutually exclusive");
         }
         if b.starts_with('@') {
-            body = util::read_file(&b[1..]).unwrap_or_else(|_| die(&format!("cannot read {}", &b[1..])));
+            body = util::read_file(&b[1..])
+                .unwrap_or_else(|_| die(&format!("cannot read {}", &b[1..])))
+                .into_bytes();
         } else if b == "-" {
-            body = util::stdin_string().unwrap_or_default();
+            body = util::stdin_string().unwrap_or_default().into_bytes();
         } else {
-            body = b.clone();
+            body = b.clone().into_bytes();
         }
     } else if !body_fields.is_empty() {
-        body.push('{');
-        for (i, (k, v)) in body_fields.iter().enumerate() {
-            if i > 0 {
-                body.push(',');
+        let has_file = body_fields
+            .iter()
+            .any(|(_, v)| v.starts_with('@') && v.len() > 1);
+        if has_file {
+            // `-F file=@path` switches the request to multipart/form-data:
+            // `@path` values become file parts, plain values become text parts.
+            is_multipart = true;
+            let mut fields: Vec<multipart::Field> = Vec::new();
+            for (k, v) in &body_fields {
+                if v.starts_with('@') && v.len() > 1 {
+                    fields.push(multipart::Field::File {
+                        name: k.clone(),
+                        path: v[1..].to_string(),
+                    });
+                } else {
+                    fields.push(multipart::Field::Text {
+                        name: k.clone(),
+                        value: v.clone(),
+                    });
+                }
             }
-            body.push_str(&bind::build_body_field(k, v));
+            let boundary = format!(
+                "oapi{:x}{:x}",
+                process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos() as u64)
+                    .unwrap_or(0)
+            );
+            let mp = multipart::build(&boundary, &fields).unwrap_or_else(|e| die(&e));
+            add_header(&mut headers, &format!("Content-Type: {}", mp.content_type));
+            body = mp.body;
+        } else {
+            let mut json = String::from("{");
+            for (i, (k, v)) in body_fields.iter().enumerate() {
+                if i > 0 {
+                    json.push(',');
+                }
+                json.push_str(&bind::build_body_field(k, v));
+            }
+            json.push('}');
+            body = json.into_bytes();
         }
-        body.push('}');
     }
-    if !body.is_empty() {
+    if !body.is_empty() && !is_multipart {
         add_header(&mut headers, "Content-Type: application/json");
     }
 
@@ -653,7 +706,11 @@ fn cmd_call(r: &registry::Registry, opname: &str, args: &[String], opts: &Global
         output::print_url_masked(&op.method, &url);
         output::print_headers_masked(&headers);
         if !body.is_empty() {
-            println!("  body: {}", body);
+            if is_multipart {
+                println!("  body: <multipart, {} bytes>", body.len());
+            } else {
+                println!("  body: {}", String::from_utf8_lossy(&body));
+            }
         }
         return 0;
     }
@@ -670,8 +727,17 @@ fn cmd_call(r: &registry::Registry, opname: &str, args: &[String], opts: &Global
         }
     };
     if resp.status < 200 || resp.status >= 300 {
-        err(&format!("HTTP {}: {}", resp.status, &resp.body[..resp.body.len().min(512)]));
+        let preview = String::from_utf8_lossy(&resp.body[..resp.body.len().min(512)]);
+        err(&format!("HTTP {}: {}", resp.status, preview));
         return 1;
+    }
+    if let Some(path) = &out_file {
+        if let Err(e) = std::fs::write(path, &resp.body) {
+            err(&format!("cannot write '{}': {}", path, e));
+            return 1;
+        }
+        eprintln!("oapi: wrote {} bytes to {}", resp.body.len(), path);
+        return 0;
     }
     print_response_body(&resp.body, jq_path.as_deref(), text_out);
     0
@@ -687,12 +753,13 @@ fn parse_field(out: &mut Vec<(String, String)>, s: &str) {
     out.push((s[..eq].to_string(), s[eq + 1..].to_string()));
 }
 
-fn print_response_body(body: &str, jq_path: Option<&str>, text_out: bool) {
-    if let Ok(v) = serde_json::from_str::<Value>(body) {
+fn print_response_body(body: &[u8], jq_path: Option<&str>, text_out: bool) {
+    if let Ok(v) = serde_json::from_slice::<Value>(body) {
         output::print_json(&v, jq_path, text_out);
     } else {
-        print!("{}", body);
-        if !body.ends_with('\n') {
+        let s = String::from_utf8_lossy(body);
+        print!("{}", s);
+        if !s.ends_with('\n') {
             println!();
         }
     }

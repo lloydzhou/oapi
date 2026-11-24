@@ -106,6 +106,25 @@ assert_contains "call-body" "$($OAPI pet create-pet --body '{"name":"x","tags":[
 echo '{"name":"fromfile"}' > "$ROOT/body.json"
 assert_contains "call-body-file" "$($OAPI pet create-pet --body @"$ROOT/body.json" 2>&1)" 'fromfile'
 
+# --- multipart upload (-F name=@path) and binary output (-o FILE) ---
+
+echo 'hello upload' > "$ROOT/upload.txt"
+$OAPI connect up "$BASE/upload.json" >/dev/null 2>&1
+assert_contains "multipart-upload" "$($OAPI up upload -F purpose=text_recognition -F file=@"$ROOT/upload.txt" 2>&1)" '"filename":"upload.txt"'
+assert_contains "multipart-text" "$($OAPI up upload -F purpose=text_recognition -F file=@"$ROOT/upload.txt" 2>&1)" 'text_recognition'
+
+# dry-run masks the multipart body instead of dumping file bytes
+assert_contains "multipart-dryrun" "$($OAPI up upload -F file=@"$ROOT/upload.txt" --dry-run 2>&1)" '<multipart'
+
+# -o FILE saves the raw response bytes (non-UTF-8 safe)
+$OAPI up download -o "$ROOT/out.bin" >/dev/null 2>/dev/null
+assert_eq "binary-exit" "$?" "0"
+python3 -c "import sys; sys.exit(0 if open('$ROOT/out.bin','rb').read() == bytes([0,1,255,254]) + '中文二进制'.encode() else 1)"
+assert_eq "binary-bytes" "$?" "0"
+$OAPI rm up >/dev/null 2>&1
+
+# --- end multipart/binary ---
+
 # unknown flag rejected
 $OAPI pet list-pets --bogus 1 >/dev/null 2>&1
 assert_eq "unknown-flag" "$?" "1"

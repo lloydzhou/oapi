@@ -40,6 +40,8 @@ oapi petstore get-pet-by-id 42                           # positional path param
 oapi petstore create-pet -F name=fluffy -F age=3         # typed body fields
 oapi petstore list-pets --jq '[].name'                   # filter output
 oapi petstore list-pets --jq '[].id' -o text             # plain text output
+oapi deepseek ocr -F purpose=text_recognition -F file=@doc.pdf   # multipart upload
+oapi deepseek tts --body '{"text":"你好"}' -o speech.wav         # binary response to file
 
 oapi api petstore GET /pets --params 'limit=1'           # raw escape hatch
 oapi sync petstore                                       # re-fetch from source
@@ -55,11 +57,23 @@ oapi api NAME METHOD PATH [--params J] [--data J]
 oapi NAME OPERATION [PARAM]... [--FLAG V]... [--body X] [-F K=V]
 
 call options: --body X (inline / @file / -)   -F K=V (repeatable, auto-typed)
-              --jq PATH   -o text   --header 'N: V'   --dry-run   --timeout N
+              --jq PATH   -o text|FILE   --header 'N: V'   --dry-run   --timeout N
 ```
 
 stdout carries data only; diagnostics go to stderr and a non-2xx response
 exits 1. `--dry-run` prints the request (with credential headers masked)
+
+## File upload and binary responses
+
+Any `-F` field whose value is `@path` (`-F file=@doc.pdf`) switches the
+request to `multipart/form-data`: `@path` fields become file parts (filename
+and content type guessed from the extension, format judged by the server),
+plain `-F k=v` fields become text parts. Without `@` fields, `-F` keeps
+building the typed JSON body.
+
+`-o FILE` writes the raw response bytes to a file (for audio/binary APIs);
+`-o text` keeps the plain-text mode. Binary output skips JSON parsing and
+`--jq`.
 
 ## Credentials (connect once, call without keys)
 

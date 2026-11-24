@@ -1,0 +1,35 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Upload fixture", "version": "1.0" },
+  "servers": [ { "url": "/api" } ],
+  "paths": {
+    "/upload": {
+      "post": {
+        "operationId": "upload",
+        "summary": "multipart upload echo",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "purpose": { "type": "string" },
+                  "file": { "type": "string", "format": "binary" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "parsed parts" } }
+      }
+    },
+    "/blob": {
+      "get": {
+        "operationId": "download",
+        "summary": "non-UTF-8 binary blob",
+        "responses": { "200": { "description": "raw bytes" } }
+      }
+    }
+  }
+}

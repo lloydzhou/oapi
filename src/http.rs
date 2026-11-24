@@ -3,10 +3,10 @@ use std::time::Duration;
 
 pub struct Response {
     pub status: u16,
-    pub body: String,
+    pub body: Vec<u8>,
 }
 
-pub fn request(method: &str, url: &str, headers: &[String], body: &str, timeout_ms: u64) -> Option<Response> {
+pub fn request(method: &str, url: &str, headers: &[String], body: &[u8], timeout_ms: u64) -> Option<Response> {
     let req = match method.to_uppercase().as_str() {
         "GET" => ureq::get(url),
         "POST" => ureq::post(url),
@@ -27,7 +27,7 @@ pub fn request(method: &str, url: &str, headers: &[String], body: &str, timeout_
     let result = if body.is_empty() {
         req.call()
     } else {
-        req.send_string(body)
+        req.send_bytes(body)
     };
     let resp = match result {
         Ok(r) => r,
@@ -38,10 +38,8 @@ pub fn request(method: &str, url: &str, headers: &[String], body: &str, timeout_
         }
     };
     let status = resp.status();
-    // Read raw bytes first: read_to_string fails outright on non-UTF-8
-    // bodies (its Err was previously discarded, silently truncating data).
+    // Read raw bytes: text callers decode below, binary callers save as-is.
     let mut bytes = Vec::new();
     let _ = resp.into_reader().read_to_end(&mut bytes);
-    let body = String::from_utf8_lossy(&bytes).into_owned();
-    Some(Response { status, body })
+    Some(Response { status, body: bytes })
 }
