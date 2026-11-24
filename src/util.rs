@@ -20,6 +20,17 @@ pub fn apis_dir() -> PathBuf {
     oapi_home().join("apis")
 }
 
+pub fn creds_dir() -> PathBuf {
+    oapi_home().join("credentials")
+}
+
+pub fn cred_path(name: &str) -> Option<PathBuf> {
+    if !valid_name(name) {
+        return None;
+    }
+    Some(creds_dir().join(format!("{}.json", name)))
+}
+
 pub fn api_path(name: &str) -> Option<PathBuf> {
     if !valid_name(name) {
         return None;

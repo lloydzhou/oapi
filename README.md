@@ -30,6 +30,7 @@ yay -S oapi
 
 ```bash
 oapi connect petstore https://example.com/openapi.json   # cache the spec
+oapi connect deepseek spec.json -H 'Authorization: Bearer $KEY'  # + credentials
 oapi ls                                                  # list registered APIs
 oapi schema petstore                                     # list operations
 oapi schema petstore get-pet-by-id                       # show one operation
@@ -42,13 +43,13 @@ oapi petstore list-pets --jq '[].id' -o text             # plain text output
 
 oapi api petstore GET /pets --params 'limit=1'           # raw escape hatch
 oapi sync petstore                                       # re-fetch from source
-oapi rm petstore                                         # drop the entry
+oapi rm petstore                                         # drop entry + credentials
 ```
 
 ## CLI overview
 
 ```
-oapi connect NAME SPEC-URL-OR-FILE | sync NAME | ls | rm NAME
+oapi connect NAME SPEC-URL-OR-FILE [--header H:V]... | sync NAME | ls | rm NAME
 oapi schema NAME [OPERATION]
 oapi api NAME METHOD PATH [--params J] [--data J]
 oapi NAME OPERATION [PARAM]... [--FLAG V]... [--body X] [-F K=V]
@@ -60,7 +61,30 @@ call options: --body X (inline / @file / -)   -F K=V (repeatable, auto-typed)
 stdout carries data only; diagnostics go to stderr and a non-2xx response
 exits 1. `--dry-run` prints the request (with credential headers masked)
 
-## Authentication via environment variables
+## Credentials (connect once, call without keys)
+
+`--header` (or `-H`) values given at `connect` time are stored per API under
+`credentials/<name>.json` (dir 0700, file 0600, same scheme as mcpc) and sent
+automatically on every later call — no environment variables needed afterwards:
+
+```bash
+oapi connect deepseek deepseek-tools.openapi.json \
+  -H 'Authorization: Bearer ${DEEPSEEK_API_KEY}'   # expanded once, then stored
+oapi deepseek search --query 'rust async'           # credentials attached
+```
+
+- Re-running `connect` without `--header` keeps stored credentials; passing
+  `--header` replaces them (key rotation). `sync` also keeps them; `rm`
+  removes them with the entry. `ls` marks credential-bearing APIs with `+cred`.
+- `${VAR}` in the connect-time header is expanded once from the environment
+  (a missing variable fails closed); the resolved value is stored, so later
+  calls work without the variable.
+- A credential file readable by group/other is refused (fail closed, like
+  mcpc): fix it with `chmod 600`.
+- Call-time `--header 'Name: V'` overrides a stored header of the same name
+  for that one call. Per-call values still expand `${VAR}` at call time.
+
+## Environment expansion
 
 `--header` values (and spec header parameters) expand `${VAR}` references from
 the process environment, so credentials never need to appear in process

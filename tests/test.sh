@@ -136,6 +136,73 @@ unset OAPI_TEST_TOKEN
 $OAPI api pet GET /headers --header 'Authorization: Bearer ${OAPI_UNSET_TEST_VAR}' >/dev/null 2>&1
 assert_eq "header-env-missing" "$?" "1"
 
+# --- connect-time credentials (mcpc-style) ---
+
+# connect with -H stores the credential
+assert_contains "cred-connect" "$($OAPI connect authed "$BASE/petstore.json" -H 'Authorization: Bearer tok-conn-123' 2>&1)" "+ credentials stored (1 header)"
+
+# later calls send it automatically, no --header needed
+assert_contains "cred-call-stored" "$($OAPI api authed GET /headers 2>&1)" '"authorization":"Bearer tok-conn-123"'
+
+# credential file is owner-only, dir too
+assert_eq "cred-mode" "$(python3 -c "import os; print(oct(os.stat('tests/o.home/oapi/credentials/authed.json').st_mode & 0o777))")" "0o600"
+assert_eq "cred-dir-mode" "$(python3 -c "import os; print(oct(os.stat('tests/o.home/oapi/credentials').st_mode & 0o777))")" "0o700"
+
+# the stored value never lands in the registry file
+if grep -q 'tok-conn-123' tests/o.home/oapi/apis/authed.json 2>/dev/null; then
+    echo "FAIL: cred-leaked-into-registry"
+    fail=$((fail+1))
+else
+    echo "PASS: cred-not-in-registry"
+    pass=$((pass+1))
+fi
+
+# dry-run masks the stored header too
+assert_contains "cred-masked" "$($OAPI api authed GET /headers --dry-run 2>&1)" "Bearer ***"
+
+# ls marks APIs that have credentials
+assert_contains "cred-ls" "$($OAPI ls 2>&1)" "+cred"
+
+# call-time --header overrides the stored one for the same header name
+assert_contains "cred-override" "$($OAPI api authed GET /headers --header 'Authorization: Bearer tok-tmp' 2>&1)" '"authorization":"Bearer tok-tmp"'
+
+# ${VAR} at connect resolves once; later calls need no environment
+export OAPI_TEST_TOKEN='tok-conn-env'
+$OAPI connect envapi "$BASE/petstore.json" -H 'Authorization: Bearer ${OAPI_TEST_TOKEN}' >/dev/null 2>&1
+unset OAPI_TEST_TOKEN
+assert_contains "cred-env-resolved" "$($OAPI api envapi GET /headers 2>&1)" '"authorization":"Bearer tok-conn-env"'
+$OAPI rm envapi >/dev/null 2>&1
+
+# connect without --header keeps stored credentials
+assert_contains "cred-kept" "$($OAPI connect authed "$BASE/petstore.json" 2>&1)" "(credentials kept)"
+assert_contains "cred-kept-sent" "$($OAPI api authed GET /headers 2>&1)" '"authorization":"Bearer tok-conn-123"'
+
+# re-connect with a new header rotates the credential
+assert_contains "cred-rotate" "$($OAPI connect authed "$BASE/petstore.json" -H 'Authorization: Bearer tok-new' 2>&1)" "+ credentials stored"
+assert_contains "cred-rotated" "$($OAPI api authed GET /headers 2>&1)" '"authorization":"Bearer tok-new"'
+
+# sync refreshes the spec but keeps credentials
+$OAPI sync authed >/dev/null 2>&1
+assert_contains "cred-sync-kept" "$($OAPI api authed GET /headers 2>&1)" '"authorization":"Bearer tok-new"'
+
+# world-readable credential file is refused (fail closed, mcpc semantics)
+chmod 644 tests/o.home/oapi/credentials/authed.json
+$OAPI api authed GET /headers >/dev/null 2>/dev/null
+assert_eq "cred-refused" "$?" "1"
+assert_contains "cred-refused-msg" "$($OAPI api authed GET /headers 2>&1)" "group/other-readable"
+chmod 600 tests/o.home/oapi/credentials/authed.json
+
+# rm removes the registry entry and its credential
+$OAPI rm authed >/dev/null 2>&1
+assert_contains "cred-rm-unknown" "$($OAPI api authed GET /headers 2>&1)" "unknown API 'authed'"
+assert_eq "cred-rm-file-gone" "$(ls tests/o.home/credentials/authed.json 2>/dev/null)" ""
+
+# unknown connect option rejected
+$OAPI connect authed "$BASE/petstore.json" --bogus >/dev/null 2>&1
+assert_eq "cred-connect-badopt" "$?" "1"
+
+# --- end connect-time credentials ---
+
 # sync re-fetches from the stored source
 assert_eq "sync" "$($OAPI sync pet 2>&1)" "connected pet: 3 operations (source $BASE/petstore.json)"
 

@@ -1,4 +1,5 @@
 mod bind;
+mod creds;
 mod http;
 mod jq;
 mod output;
@@ -21,11 +22,12 @@ struct GlobalOpts {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: oapi connect NAME SPEC-URL-OR-FILE | sync NAME | ls | rm NAME | schema NAME [OP]");
+    eprintln!("usage: oapi connect NAME SPEC-URL-OR-FILE [--header H:V]... | sync NAME | ls | rm NAME | schema NAME [OP]");
     eprintln!("       oapi api NAME METHOD PATH [--params J] [--data J]");
     eprintln!("       oapi NAME OPERATION [PARAM]... [--FLAG V]... [--body X] [-F K=V]");
     eprintln!("global: --dry-run --header H:V --timeout N --insecure");
     eprintln!("call:   --body X --jq PATH -o text --header H:V");
+    eprintln!("connect --header values are stored per API (0600) and sent automatically on every later call.");
     process::exit(1);
 }
 
@@ -122,6 +124,32 @@ fn parse_timeout(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) && s.len() <= 10
 }
 
+/// Stored connect-time credentials first; a call-time `--header` with the
+/// same header name replaces the stored one (temporary override).
+fn merge_headers(stored: &[String], call_time: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = stored.to_vec();
+    for h in call_time {
+        let name = header_name(h);
+        out.retain(|s| header_name(s) != name);
+        out.push(h.clone());
+    }
+    out
+}
+
+fn header_name(h: &str) -> String {
+    h.split(':').next().unwrap_or("").trim().to_ascii_lowercase()
+}
+
+/// mcpc-style credential resolution: a problem aborts the call (fail closed)
+/// instead of silently dropping auth. One-shot CLI equivalent of mcpc's
+/// skip-the-session behavior.
+fn stored_headers(api: &str) -> Vec<String> {
+    match creds::load(api) {
+        Ok(h) => h,
+        Err(e) => die(&format!("{}: {}", api, e)),
+    }
+}
+
 fn fetch_spec(source: &str) -> Option<Value> {
     let text = if source.starts_with("http://") || source.starts_with("https://") {
         let resp = http::request("GET", source, &["Accept: application/json".to_string()], "", DEFAULT_TIMEOUT_MS)?;
@@ -136,14 +164,42 @@ fn fetch_spec(source: &str) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
-fn cmd_connect(name: &str, source: &str, dry_run: bool) -> i32 {
+fn cmd_connect(name: &str, source: &str, rest: &[String], dry_run: bool) -> i32 {
     if !util::valid_name(name) {
         err(&format!("bad name '{}'", name));
         return 1;
     }
+    // Trailing options: --header H:V (also -H) capture credentials at connect
+    // time; --dry-run shows what would happen without touching the registry.
+    let mut connect_headers: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let a = &rest[i];
+        if a == "--header" {
+            if i + 1 >= rest.len() {
+                die("missing value for --header");
+            }
+            add_header(&mut connect_headers, &rest[i + 1]);
+            i += 2;
+        } else if let Some(v) = a.strip_prefix("--header=") {
+            add_header(&mut connect_headers, v);
+            i += 1;
+        } else if a == "-H" {
+            if i + 1 >= rest.len() {
+                die("missing value for -H");
+            }
+            add_header(&mut connect_headers, &rest[i + 1]);
+            i += 2;
+        } else if a == "--dry-run" {
+            i += 1;
+        } else {
+            die(&format!("unknown connect option '{}'", a));
+        }
+    }
     if dry_run {
         println!("GET {}", source);
         println!("  connect {}", name);
+        output::print_headers_masked(&connect_headers);
         return 0;
     }
     let spec = match fetch_spec(source) {
@@ -164,7 +220,17 @@ fn cmd_connect(name: &str, source: &str, dry_run: bool) -> i32 {
         err("kebab-case operationId collision");
         return 1;
     }
-    println!("connected {}: {} operations (source {})", name, ops.len(), source);
+    let mut msg = format!("connected {}: {} operations (source {})", name, ops.len(), source);
+    if !connect_headers.is_empty() {
+        if let Err(e) = creds::store(name, &connect_headers) {
+            err(&format!("credential store failed: {}", e));
+            return 1;
+        }
+        msg.push_str(&format!(" + credentials stored ({} header)", connect_headers.len()));
+    } else if creds::exists(name) {
+        msg.push_str(" (credentials kept)");
+    }
+    println!("{}", msg);
     0
 }
 
@@ -176,7 +242,8 @@ fn cmd_sync(name: &str, opts: &GlobalOpts) -> i32 {
     if r.source.is_empty() {
         die(&format!("{}: registry entry has no source", name));
     }
-    cmd_connect(name, &r.source, opts.dry_run)
+    // Refresh the spec only; stored credentials are kept (mcpc-restart analogue).
+    cmd_connect(name, &r.source, &[], opts.dry_run)
 }
 
 fn cmd_ls() -> i32 {
@@ -186,7 +253,8 @@ fn cmd_ls() -> i32 {
         return 0;
     }
     for (name, ops, source) in list {
-        println!("{:-16} {:>3} operations  {}", name, ops, source);
+        let cred = if creds::exists(&name) { " +cred" } else { "" };
+        println!("{:-16} {:>3} operations  {}{}", name, ops, source, cred);
     }
     0
 }
@@ -194,6 +262,11 @@ fn cmd_ls() -> i32 {
 fn cmd_rm(name: &str) -> i32 {
     if let Err(e) = registry::remove(name) {
         err(&format!("rm failed: {}", e));
+        return 1;
+    }
+    // The credential for a removed API is gone with it (mcpc `close` semantics).
+    if let Err(e) = creds::remove(name) {
+        err(&format!("credential removal failed: {}", e));
         return 1;
     }
     0
@@ -251,7 +324,7 @@ fn cmd_api(r: &registry::Registry, method: &str, path: &str, args: &[String], op
     let mut params = None;
     let mut data = None;
     let mut dry_run = opts.dry_run;
-    let mut headers = opts.headers.clone();
+    let mut headers = merge_headers(&stored_headers(&r.name), &opts.headers);
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -362,7 +435,7 @@ fn cmd_call(r: &registry::Registry, opname: &str, args: &[String], opts: &Global
     let mut body_fields: Vec<(String, String)> = Vec::new();
     let mut jq_path: Option<String> = None;
     let mut text_out = false;
-    let mut headers = opts.headers.clone();
+    let mut headers = merge_headers(&stored_headers(&r.name), &opts.headers);
 
     let mut i = 0;
     while i < args.len() {
@@ -641,10 +714,10 @@ fn main() {
 
     let rc = match rest[0].as_str() {
         "connect" => {
-            if rest.len() != 3 {
+            if rest.len() < 3 {
                 usage();
             }
-            cmd_connect(&rest[1], &rest[2], opts.dry_run)
+            cmd_connect(&rest[1], &rest[2], &rest[3..], opts.dry_run)
         }
         "sync" => {
             if rest.len() != 2 {
